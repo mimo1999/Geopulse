@@ -1,0 +1,65 @@
+version: 1
+disable_existing_loggers: false
+
+formatters:
+  standard:
+    format: "%(asctime)s [%(levelname)-8s] %(name)s: %(message)s"
+    datefmt: "%Y-%m-%d %H:%M:%S"
+  json:
+    "()": pythonjsonlogger.jsonlogger.JsonFormatter
+    format: "%(asctime)s %(levelname)s %(name)s %(message)s"
+
+handlers:
+  console:
+    class: logging.StreamHandler
+    level: DEBUG
+    formatter: standard
+    stream: ext://sys.stdout
+
+  file_info:
+    class: logging.handlers.RotatingFileHandler
+    level: INFO
+    formatter: json
+    filename: logs/geopulse.log
+    maxBytes: 52428800   # 50 MB
+    backupCount: 5
+    encoding: utf8
+
+  file_error:
+    class: logging.handlers.RotatingFileHandler
+    level: ERROR
+    formatter: json
+    filename: logs/errors.log
+    maxBytes: 10485760   # 10 MB
+    backupCount: 3
+    encoding: utf8
+
+loggers:
+  ingestion:
+    level: INFO
+    handlers: [console, file_info, file_error]
+    propagate: false
+
+  preprocessing:
+    level: INFO
+    handlers: [console, file_info]
+    propagate: false
+
+  models:
+    level: INFO
+    handlers: [console, file_info]
+    propagate: false
+
+  backend:
+    level: INFO
+    handlers: [console, file_info, file_error]
+    propagate: false
+
+  sqlalchemy.engine:
+    level: WARNING
+    handlers: [file_info]
+    propagate: false
+
+root:
+  level: INFO
+  handlers: [console, file_info]

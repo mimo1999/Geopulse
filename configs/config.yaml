@@ -1,0 +1,146 @@
+# ============================================================
+# GeoPulse Project Configuration
+# ============================================================
+
+app:
+  name: "GeoPulse — Global Risk Intelligence Platform"
+  version: "0.1.0"
+  debug: false
+  log_level: "INFO"
+
+# ---------------------
+# Database
+# ---------------------
+database:
+  host: "localhost"
+  port: 5432
+  name: "gdelt_risk"
+  user: "gldt"
+  password: "gldt_secret"
+  pool_size: 10
+  max_overflow: 20
+  pool_timeout: 30
+  echo_sql: false
+
+# ---------------------
+# GDELT Ingestion
+# ---------------------
+gdelt:
+  version: 1                          # 1 = GDELT 1.0, 2 = GDELT 2.0
+  base_url_v1: "http://data.gdeltproject.org/events"
+  base_url_v2: "http://data.gdeltproject.org/gdeltv2"
+  master_list_v2: "http://data.gdeltproject.org/gdeltv2/masterfilelist.txt"
+
+  download:
+    timeout_seconds: 120
+    max_retries: 3
+    retry_delay_seconds: 5
+    chunk_size_bytes: 65536           # 64KB streaming chunks
+    concurrent_downloads: 2
+
+  processing:
+    chunk_size_rows: 50000            # pandas chunksize
+    batch_insert_size: 5000           # rows per DB insert
+    dedup_window_days: 3              # look-back for deduplication
+    min_event_date: "2020-01-01"      # ignore events before this
+
+  scheduling:
+    # Cron for GDELT 1.0 daily file (runs after midnight UTC)
+    daily_cron: "0 2 * * *"
+    # How many days back to backfill on first run
+    backfill_days: 30
+    max_backfill_days: 365
+
+  raw_data_dir: "data/raw"
+  keep_raw_files: false               # delete ZIP after parsing
+
+# ---------------------
+# Feature Extraction
+# ---------------------
+features:
+  # CAMEO event code prefixes → feature dimensions
+  event_code_map:
+    protest:       [14]               # root codes
+    assault:       [18, 19]
+    mass_violence: [20]
+    sanctions:     [163]
+    terrorism:     [180, 181, 182, 183]
+    military:      [15, 16, 17]
+    diplomacy:     [1, 2, 3]
+
+  # Goldstein scale thresholds
+  goldstein:
+    conflict_threshold: -2.0
+    cooperation_threshold: 2.0
+
+  # Normalization window (days) for rolling features
+  normalization_window: 90
+
+  # Countries to always track even with sparse data
+  priority_countries:
+    - "US"
+    - "RU"
+    - "CN"
+    - "IN"
+    - "PK"
+    - "IR"
+    - "IL"
+    - "UA"
+    - "KP"
+    - "SA"
+
+# ---------------------
+# Model
+# ---------------------
+model:
+  checkpoint_dir: "models/checkpoints"
+  sequence_length: 90                 # days of history
+  embedding_dim: 64
+  hidden_dim: 128
+  num_heads: 4
+  num_layers: 2
+  dropout: 0.1
+  mc_dropout_samples: 50             # Monte Carlo inference passes
+
+  # Risk score weights (must sum to 1.0)
+  risk_weights:
+    instability: 0.40
+    war: 0.30
+    terrorism: 0.20
+    financial: 0.10
+
+# ---------------------
+# Advisory
+# ---------------------
+advisory:
+  thresholds:
+    critical: 0.80
+    high: 0.65
+    elevated: 0.50
+    moderate: 0.35
+    low: 0.0
+
+  ollama:
+    enabled: false                    # Phase 1: rule-based only
+    url: "http://localhost:11434"
+    model: "mistral"
+    timeout_seconds: 30
+
+# ---------------------
+# API
+# ---------------------
+api:
+  host: "0.0.0.0"
+  port: 8000
+  cors_origins:
+    - "http://localhost:8501"
+    - "http://127.0.0.1:8501"
+  rate_limit_per_minute: 60
+
+# ---------------------
+# Streamlit
+# ---------------------
+streamlit:
+  backend_url: "http://localhost:8000"
+  map_refresh_seconds: 300
+  max_timeline_days: 365

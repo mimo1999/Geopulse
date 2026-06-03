@@ -1,0 +1,106 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: timescale/timescaledb-ha:pg15-latest
+    container_name: geopulse_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-gldt}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gldt_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-gdelt_risk}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/home/postgres/pgdata/data
+      - ./init.sql:/docker-entrypoint-initdb.d/01_init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gldt} -d ${POSTGRES_DB:-gdelt_risk}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: >
+      postgres
+        -c shared_buffers=512MB
+        -c effective_cache_size=2GB
+        -c work_mem=64MB
+        -c maintenance_work_mem=256MB
+        -c max_connections=100
+        -c checkpoint_completion_target=0.9
+        -c wal_buffers=16MB
+        -c default_statistics_target=100
+
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: geopulse_backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-gldt}:${POSTGRES_PASSWORD:-gldt_secret}@postgres:5432/${POSTGRES_DB:-gdelt_risk}
+      DATABASE_SYNC_URL: postgresql://${POSTGRES_USER:-gldt}:${POSTGRES_PASSWORD:-gldt_secret}@postgres:5432/${POSTGRES_DB:-gdelt_risk}
+      OLLAMA_URL: http://ollama:11434
+      LOG_LEVEL: INFO
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../:/app
+      - model_cache:/app/models/checkpoints
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+
+  streamlit:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: geopulse_streamlit
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      BACKEND_URL: http://backend:8000
+    ports:
+      - "8501:8501"
+    volumes:
+      - ../:/app
+    command: streamlit run streamlit_app/app.py --server.port 8501 --server.address 0.0.0.0
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: geopulse_ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  scheduler:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: geopulse_scheduler
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_SYNC_URL: postgresql://${POSTGRES_USER:-gldt}:${POSTGRES_PASSWORD:-gldt_secret}@postgres:5432/${POSTGRES_DB:-gdelt_risk}
+    volumes:
+      - ../:/app
+      - gdelt_downloads:/app/data/raw
+    command: python -m ingestion.scheduler
+
+volumes:
+  postgres_data:
+  model_cache:
+  ollama_models:
+  gdelt_downloads:
