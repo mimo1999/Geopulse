@@ -25,6 +25,10 @@ import torch
 
 from models.forecaster import EscalationForecaster
 from models.dataset import FEATURE_COLUMNS, NUM_FEATURES
+try:
+    from evaluation.calibration import ConformalCalibrator as _ConformalCalibrator
+except ImportError:  # evaluation package absent (e.g. inference-only deploy)
+    _ConformalCalibrator = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger("inference.escalation_forecaster")
 
@@ -152,12 +156,14 @@ class EscalationForecasterEngine:
         seq_len: int = 90,
         mc_passes: int = 30,
         device: str = "cpu",
+        conformal_path: Optional[str] = None,
     ):
         self._dsn       = dsn
         self._seq_len   = seq_len
         self._mc_passes = mc_passes
         self._device    = device
         self._model: Optional[EscalationForecaster] = None
+        self._calibrator = None
 
         if model_path and Path(model_path).exists():
             logger.info("Loading forecaster from %s", model_path)
@@ -172,6 +178,33 @@ class EscalationForecasterEngine:
                 "Forecaster model not found at %s — "
                 "forecast() will fall back to trend extrapolation.",
                 model_path,
+            )
+
+        # Load conformal interval quantiles if available. These replace the
+        # raw MC-Dropout bands (which cover only ~13% instead of the nominal
+        # 80%) with split-conformal calibrated intervals (~78% coverage).
+        # Default location: evaluation/results/conformal_quantiles.json
+        if conformal_path is None:
+            conformal_path = str(
+                Path(__file__).resolve().parent.parent
+                / "evaluation" / "results" / "conformal_quantiles.json"
+            )
+        if _ConformalCalibrator is not None and Path(conformal_path).exists():
+            try:
+                self._calibrator = _ConformalCalibrator.load(conformal_path)
+                logger.info(
+                    "Loaded conformal calibrator (target %.0f%% coverage, "
+                    "fit on %d residuals)",
+                    (1 - self._calibrator.alpha) * 100,
+                    self._calibrator.n_calibration,
+                )
+            except Exception as exc:
+                logger.warning("Failed to load conformal calibrator: %s", exc)
+        else:
+            logger.info(
+                "No conformal quantiles at %s — using raw MC-Dropout bands. "
+                "Run scripts/calibrate_intervals.py to calibrate.",
+                conformal_path,
             )
 
     # ------------------------------------------------------------------
@@ -198,10 +231,10 @@ class EscalationForecasterEngine:
         if as_of is None:
             as_of = date.today()
 
-        features = self._load_features(country, as_of)
+        features, origin_risk = self._load_features(country, as_of)
 
         if self._model is not None:
-            steps = self._neural_forecast(features, as_of)
+            steps = self._neural_forecast(features, as_of, origin_risk)
         else:
             steps = self._trend_extrapolation(features, as_of)
 
@@ -279,10 +312,23 @@ class EscalationForecasterEngine:
     # Scoring implementations
     # ------------------------------------------------------------------
 
+    def _get_interval(
+        self,
+        pred: float,
+        horizon_days: int,
+        origin_risk: float,
+        raw_lo: float,
+        raw_hi: float,
+    ) -> tuple[float, float]:
+        if self._calibrator is not None:
+            return self._calibrator.interval(pred, horizon_days, origin_risk=origin_risk)
+        return raw_lo, raw_hi
+
     def _neural_forecast(
         self,
         features: np.ndarray,
         as_of: date,
+        origin_risk: float,
     ) -> list[ForecastStep]:
         tensor = torch.from_numpy(features).unsqueeze(0).to(self._device)
         T = tensor.size(1)
@@ -294,18 +340,24 @@ class EscalationForecasterEngine:
         steps = []
         for h in range(H):
             step_offset = HORIZON_DAYS[h] if h < len(HORIZON_DAYS) else (h + 1) * 14
+            risk = float(out["risk_score"][0, h].item())
+            lo, hi = self._get_interval(
+                risk, step_offset, origin_risk,
+                float(out["lower_bound"][0, h].item()),
+                float(out["upper_bound"][0, h].item()),
+            )
             steps.append(ForecastStep(
                 step=h + 1,
                 target_date=as_of + timedelta(days=step_offset),
-                risk_score=float(out["risk_score"][0, h].item()),
+                risk_score=risk,
                 instability=float(out["instability"][0, h].item()),
                 war_probability=float(out["war"][0, h].item()),
                 terrorism_risk=float(out["terrorism"][0, h].item()),
                 financial_stress=float(out["financial"][0, h].item()),
                 confidence=float(out["confidence"][0, h].item()),
                 variance=float(out["variance"][0, h].item()),
-                lower_bound=float(out["lower_bound"][0, h].item()),
-                upper_bound=float(out["upper_bound"][0, h].item()),
+                lower_bound=lo,
+                upper_bound=hi,
             ))
         return steps
 
@@ -363,8 +415,9 @@ class EscalationForecasterEngine:
     # Feature loading
     # ------------------------------------------------------------------
 
-    def _load_features(self, country: str, as_of: date) -> np.ndarray:
-        # Anchor to the latest available data if as_of is ahead of the DB
+    def _load_features(self, country: str, as_of: date) -> tuple[np.ndarray, float]:
+        """Return (feature_matrix, origin_risk) where origin_risk is the
+        risk_score at the effective pivot date, used by the conformal calibrator."""
         conn = psycopg2.connect(self._dsn)
         try:
             with conn, conn.cursor() as cur:
@@ -378,14 +431,15 @@ class EscalationForecasterEngine:
                 start = effective_date - timedelta(days=self._seq_len - 1)
                 cols  = ", ".join(FEATURE_COLUMNS)
                 cur.execute(
-                    self._FETCH_FEATURES_SQL.format(cols=cols),
+                    self._FETCH_FEATURES_SQL.format(cols=f"{cols}, risk_score"),
                     (country, start, effective_date),
                 )
                 rows = cur.fetchall()
         finally:
             conn.close()
 
-        by_date = {row[0]: list(row[1:]) for row in rows}
+        # row layout: (feature_date, feat_0..feat_6, risk_score)
+        by_date = {row[0]: list(row[1:NUM_FEATURES + 1]) for row in rows}
         matrix  = np.zeros((self._seq_len, NUM_FEATURES), dtype=np.float32)
         last_valid = None
 
@@ -398,7 +452,14 @@ class EscalationForecasterEngine:
             elif last_valid is not None:
                 matrix[i] = last_valid
 
-        return matrix
+        # Pivot-date risk score: most recent non-null value in the window
+        origin_risk = 0.0
+        for row in reversed(rows):
+            if row[NUM_FEATURES + 1] is not None:
+                origin_risk = float(row[NUM_FEATURES + 1])
+                break
+
+        return matrix, origin_risk
 
     def _fetch_active_countries(self, as_of: date) -> list[str]:
         """
