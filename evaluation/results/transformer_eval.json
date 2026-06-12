@@ -1,0 +1,54 @@
+{
+  "model_path": "D:\\Projects\\Gldt_project\\models\\real_data_model.pt",
+  "data_source": "parquet:D:\\Projects\\Gldt_project\\data\\real_cache",
+  "test_start": "2025-06-01",
+  "test_end": "2026-03-22",
+  "n_samples": 3403,
+  "metrics": {
+    "instability": {
+      "n": 3403,
+      "auc_roc": 0.9812,
+      "auc_pr": 0.9821,
+      "mae": 0.061,
+      "mse": 0.0049,
+      "f1_0.5": 0.8524
+    },
+    "war": {
+      "n": 3403,
+      "auc_roc": 0.9799,
+      "auc_pr": 0.9812,
+      "mae": 0.0499,
+      "mse": 0.0034,
+      "f1_0.5": 0.8655
+    },
+    "terrorism": {
+      "n": 3403,
+      "auc_roc": 0.9758,
+      "auc_pr": 0.977,
+      "mae": 0.0946,
+      "mse": 0.0116,
+      "f1_0.5": 0.848
+    },
+    "financial": {
+      "n": 3403,
+      "auc_roc": 0.9948,
+      "auc_pr": 0.9997,
+      "mae": 0.0263,
+      "mse": 0.0022,
+      "f1_0.5": 0.9926
+    },
+    "composite_risk": {
+      "n": 3403,
+      "mae": 0.0589,
+      "mse": 0.0045,
+      "baseline_mae": 0.0923,
+      "skill_score": 0.3619
+    },
+    "mc_calibration": {
+      "ece": 0.0156,
+      "mean_confidence": 0.9994,
+      "coverage_0.10": 0.9838,
+      "coverage_0.20": 1.0
+    }
+  }
+}
