@@ -39,3 +39,6 @@ Thumbs.db
 
 # Docker volumes (local)
 postgres_data/
+
+# Claude Code session data
+.claude/
