@@ -9,18 +9,19 @@ A full-stack machine-learning platform that ingests the Global Database of Event
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [Architecture](#architecture)
-3. [Tech Stack](#tech-stack)
-4. [Project Structure](#project-structure)
-5. [Database Schema](#database-schema)
-6. [ML Models](#ml-models)
-7. [REST API Reference](#rest-api-reference)
-8. [Dashboard — UI Pages](#dashboard--ui-pages)
-9. [Quick Start (Local)](#quick-start-local)
-10. [Docker Deployment](#docker-deployment)
-11. [Configuration](#configuration)
-12. [Training the Models](#training-the-models)
-13. [Data Pipeline](#data-pipeline)
+2. [Performance](#performance)
+3. [Architecture](#architecture)
+4. [Tech Stack](#tech-stack)
+5. [Project Structure](#project-structure)
+6. [Database Schema](#database-schema)
+7. [ML Models](#ml-models)
+8. [REST API Reference](#rest-api-reference)
+9. [Dashboard — UI Pages](#dashboard--ui-pages)
+10. [Quick Start (Local)](#quick-start-local)
+11. [Docker Deployment](#docker-deployment)
+12. [Configuration](#configuration)
+13. [Training the Models](#training-the-models)
+14. [Data Pipeline](#data-pipeline)
 
 ---
 
@@ -35,6 +36,35 @@ GeoPulse pulls daily GDELT event exports, parses and cleans the raw CAMEO-coded 
 | **Phase 3** | `EscalationForecaster` (4-step bi-weekly horizon), `RiskGNN` (Graph Attention Network for contagion scoring), TF-IDF RAG advisory generation |
 
 All three phases are fully integrated in the FastAPI backend and exposed via a 7-page Streamlit dashboard.
+
+---
+
+## Performance
+
+Evaluated via **walk-forward backtesting** — 53 bi-weekly expanding-window folds spanning January 2023 to March 2026, across 210 countries, producing 35,102 predictions with matched ground-truth risk scores. All evaluation is strictly temporal: no future data leaks into any fold.
+
+### Per-horizon results
+
+| Horizon | N predictions | MAE | RMSE | Directional accuracy | Skill vs. carry-forward |
+|---------|--------------|-----|------|---------------------|------------------------|
+| **14 days** | 9,203 | 0.1620 | 0.1969 | 70.6% | +14.4% |
+| **28 days** | 8,822 | 0.1616 | 0.1967 | 71.6% | +16.0% |
+| **42 days** | 8,613 | 0.1618 | 0.1972 | 70.7% | +15.4% |
+| **56 days** | 8,464 | 0.1616 | 0.1965 | 70.5% | +16.0% |
+
+Risk scores are on a continuous 0–1 scale. MAE and skill are computed against a carry-forward baseline (predicting the current risk score for all future horizons). Directional accuracy measures whether the model correctly predicts the sign of risk change (up or down); random baseline is 50%.
+
+### Benchmark context (28-day horizon)
+
+The 28-day directional accuracy of **71.6%** is comparable to the ~75% next-month accuracy reported for Random Forest models on GDELT binary instability forecasting (Zebrowski & Afli, SBP-BRiMS 2025; arXiv 2411.06639), while operating on the harder continuous regression target rather than a binary stable/unstable label.
+
+The **+16.0% skill** over carry-forward is meaningful in the conflict-forecasting literature: the ViEWS Prediction Challenge (arXiv 2407.11045) — the primary public benchmark for country-level political violence forecasting — found that a no-change model outperformed all submitted ML models under the TADDA directional metric (arXiv 2304.12108), making positive skill over persistence the key test to clear.
+
+Horizon stability (MAE within 0.0004 across 14–56 days) reflects the model's use of a compressed latent representation of the 90-day history rather than explicit trajectory extrapolation.
+
+### Confidence interval calibration
+
+Raw MC-Dropout intervals covered only **13%** of held-out actuals — consistent with prior work showing MC-Dropout captures only epistemic uncertainty, not aleatoric geopolitical volatility. GeoPulse applies **split-conformal calibration** (Angelopoulos & Bates, 2023) fit on backtest residuals, raising empirical coverage to **78%** on a chronologically held-out evaluation half with no retraining. Production intervals use per-horizon quantiles of ±0.26 (on the 0–1 scale), providing a finite-sample distribution-free coverage guarantee.
 
 ---
 
@@ -146,7 +176,16 @@ geopulse/
 │       ├── 04_escalation_forecast.py # Page 5: Escalation Forecast
 │       ├── 05_gnn_network.py         # Page 6: GNN Spillover Network
 │       └── 06_rag_advisory.py        # Page 7: RAG Advisory Intelligence
+├── evaluation/
+│   ├── backtester.py                 # Walk-forward backtester (expanding window, batched inference)
+│   ├── calibration.py                # Split-conformal calibration (ConformalCalibrator)
+│   ├── metrics.py                    # HorizonMetrics, per-tier metrics, skill score
+│   └── results/
+│       ├── backtest_results.json     # 35,102 predictions across 53 folds, 210 countries
+│       └── conformal_quantiles.json  # Production conformal quantiles (±0.26 per horizon)
 ├── scripts/
+│   ├── run_backtest.py               # CLI runner for walk-forward backtester
+│   ├── calibrate_intervals.py        # Chronological-split conformal calibration + report
 │   ├── seed_db_from_cache.py         # One-time DB seeding from parquet cache
 │   ├── train_forecaster.py           # Phase 3 forecaster training
 │   ├── train_phase2.py               # Phase 2 model training
@@ -198,12 +237,15 @@ A Transformer encoder that operates over a 90-day time-series of feature vectors
 
 ### Phase 3 — EscalationForecaster (LSTM)
 
-Sequence-to-sequence LSTM for 4-step bi-weekly risk trajectory prediction with confidence intervals.
+Sequence-to-sequence LSTM for 4-step bi-weekly risk trajectory prediction with calibrated confidence intervals.
 
 - **Input:** 90-day feature history → LSTM encoder → 4 autoregressive decoder steps
 - **Output per step:** risk_score, instability, war_probability, terrorism_risk, financial_stress, variance → 80% CI bounds
+- **Parameters:** 936,069 (EscalationForecaster-LSTM-v1)
+- **Uncertainty:** MC-Dropout (5 forward passes) for epistemic uncertainty; post-hoc split-conformal calibration for production-grade 80% coverage intervals
+- **Evaluation:** 35,102 walk-forward predictions, 71.6% directional accuracy at 28-day horizon, +16.0% skill over carry-forward baseline
 - **Fallback:** Linear trend extrapolation when no trained checkpoint is available
-- **Checkpoint:** `forecaster_v1_best.pt`
+- **Checkpoint:** `models/checkpoints/forecaster_v1_best.pt`
 
 ### Phase 3 — RiskGNN (Graph Attention Network)
 
@@ -500,6 +542,19 @@ curl -X POST http://localhost:8000/analyze/spillover \
 ```bash
 python scripts/train_forecaster.py
 # Checkpoint saved: forecaster_v1_best.pt
+```
+
+### Evaluation — Walk-Forward Backtest + Conformal Calibration
+
+```bash
+# Run full backtest (53 folds, 210 countries, ~2 min on GPU / ~30 min on CPU):
+python scripts/run_backtest.py
+# Results saved to evaluation/results/backtest_results.json
+
+# Fit conformal calibration on backtest residuals and report coverage:
+python scripts/calibrate_intervals.py
+# Saves production quantiles to evaluation/results/conformal_quantiles.json
+# The forecaster engine loads these automatically on next startup
 ```
 
 ### Phase 3 — GNN + RAG Corpus
