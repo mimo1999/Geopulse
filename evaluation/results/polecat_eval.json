@@ -1,0 +1,54 @@
+{
+  "model_path": "D:\\Projects\\Gldt_project\\models\\real_data_model.pt",
+  "data_source": "polecat:dataverse_files.zip",
+  "years": null,
+  "test_fraction": 0.2,
+  "n_samples": 5752,
+  "metrics": {
+    "instability": {
+      "n": 5752,
+      "auc_roc": 0.9752,
+      "auc_pr": 0.0101,
+      "mae": 0.0424,
+      "mse": 0.0029,
+      "f1_0.5": 0.0
+    },
+    "war": {
+      "n": 5752,
+      "auc_roc": 0.994,
+      "auc_pr": 0.9375,
+      "mae": 0.0473,
+      "mse": 0.0041,
+      "f1_0.5": 0.4423
+    },
+    "terrorism": {
+      "n": 5752,
+      "auc_roc": 0.998,
+      "auc_pr": 0.8938,
+      "mae": 0.0627,
+      "mse": 0.0074,
+      "f1_0.5": 0.0
+    },
+    "financial": {
+      "n": 5752,
+      "auc_roc": 0.9937,
+      "auc_pr": 0.6998,
+      "mae": 0.0573,
+      "mse": 0.0057,
+      "f1_0.5": 0.0
+    },
+    "composite_risk": {
+      "n": 5752,
+      "mae": 0.0384,
+      "mse": 0.0026,
+      "baseline_mae": 0.0561,
+      "skill_score": 0.3153
+    },
+    "mc_calibration": {
+      "ece": 0.0775,
+      "mean_confidence": 0.9996,
+      "coverage_0.10": 0.9221,
+      "coverage_0.20": 0.988
+    }
+  }
+}
